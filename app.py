@@ -7,7 +7,7 @@ from agent import generate_sql
 from sql_guard import is_safe_select
 from schema_utils import get_schema, convert_to_sqlite
 
-st.title("NL to SQL Agent")
+st.title("SQL Query Agent")
 
 # --- Session state for rate limiting ---
 if "query_count" not in st.session_state:
@@ -41,7 +41,12 @@ with st.expander("View detected schema"):
     st.text(schema)
 
 # --- Question input ---
-question = st.text_input("Ask a question about the database:")
+# question = st.text_input("Ask a question about the database:")
+
+question = st.text_input(
+    "Ask a question about the database:",
+    placeholder="Ask a question to get a SQL query"
+)
 
 if st.session_state.query_count >= MAX_QUERIES_PER_SESSION:
     st.warning("You've reached the query limit for this session. Please refresh to start a new session.")
