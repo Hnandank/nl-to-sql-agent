@@ -113,3 +113,9 @@ previews = get_table_previews(db_path)
 for table_name, df in previews.items():
     st.markdown(f"**{table_name}** ({len(df.columns)} columns)")
     st.dataframe(df)
+
+st.markdown("---")
+st.caption(
+    "⚠️ This tool uses AI to generate SQL queries. Outputs may occasionally be inaccurate — please verify results independently."
+)
+st.caption("© 2026 All rights reserved.")
