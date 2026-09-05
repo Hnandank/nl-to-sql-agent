@@ -30,7 +30,7 @@ A self-correcting natural language–to–SQL agent. Ask questions in plain Engl
 ## Running locally
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/Hnandank/nl-to-sql-agent
 cd nl-to-sql-agent
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
