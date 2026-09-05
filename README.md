@@ -2,7 +2,7 @@
 
 A self-correcting natural language–to–SQL agent. Ask questions in plain English, and it generates, validates, and executes SQL against a database — either the bundled sample or your own uploaded file (SQLite, CSV, or Excel).
 
-**Live demo:** [your-streamlit-url-here]
+**Live demo:** https://nl-to-sql-agent-fubtnevlmqr9tqswaangw8.streamlit.app/
 
 ## Features
 
