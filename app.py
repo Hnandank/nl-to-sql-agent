@@ -31,7 +31,7 @@ if uploaded_file is not None:
         st.error(f"Could not process file: {e}")
         st.stop()
 else:
-    db_path = "db/chinook.db"
+    db_path = "db/Chinook.db"
     st.info("No file uploaded — using the sample Chinook music store database.")
 
 # --- Schema detection ---
