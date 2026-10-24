@@ -110,10 +110,11 @@ class LLM:
             rec = self.cache[key]
             return rec["sql"], {**rec["meta"], "cached": True}
 
+        client = self._client()  # fail fast (outside the retry loop) if the key is missing
         for attempt in range(6):
             try:
                 t0 = time.perf_counter()
-                resp = self._client().chat.completions.create(
+                resp = client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0,
@@ -498,6 +499,10 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="only run the first N answerable questions")
     ap.add_argument("--oracle", action="store_true", help="use gold SQL as the model output (harness self-check)")
     args = ap.parse_args()
+
+    if not args.oracle and not os.environ.get("GROQ_API_KEY"):
+        sys.exit("GROQ_API_KEY is not set in this terminal. Set it first, e.g. PowerShell: "
+                 "$env:GROQ_API_KEY=\"your_key\"")
 
     data = json.load(open(args.questions))
     answerable = data["answerable"][: args.limit] if args.limit else data["answerable"]
