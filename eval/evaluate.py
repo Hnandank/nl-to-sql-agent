@@ -125,8 +125,15 @@ class LLM:
                 latency = time.perf_counter() - t0
                 break
             except Exception as e:  # rate limit / transient errors
-                wait = 2 ** attempt * 3
-                print(f"  LLM error ({type(e).__name__}); retrying in {wait}s", file=sys.stderr)
+                msg = str(e)
+                if "per day" in msg.lower() or "TPD" in msg:
+                    sys.exit("\nDaily token limit reached on the Groq free tier. Progress is cached: "
+                             "re-run the same command after the limit resets (see the reset time in the message):\n"
+                             + msg[:400])
+                m = re.search(r"try again in (?:(\d+)m)?(?:([\d.]+)s)?", msg)
+                hinted = (int(m.group(1) or 0) * 60 + float(m.group(2) or 0)) if m else 0
+                wait = max(2 ** attempt * 3, hinted + 1)
+                print(f"  LLM error ({type(e).__name__}): {msg[:160]}\n  retrying in {wait:.0f}s", file=sys.stderr)
                 time.sleep(wait)
         else:
             raise RuntimeError("LLM call failed after retries")
