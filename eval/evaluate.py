@@ -16,6 +16,7 @@ Usage (from the repo root):
     export GROQ_API_KEY=...
     python eval/evaluate.py --variants full no_samples no_fk names_only
     python eval/evaluate.py --oracle      # harness self-check, no API calls
+    python eval/evaluate.py --no-empty-retry --legacy-sampling --results-dir eval/results_baseline  # old behaviour
 
 LLM responses are cached (temperature is 0), so re-runs are free and
 reproducible.
@@ -40,12 +41,14 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
 
+from result_checks import empty_result_prompt, is_suspicious_empty  # noqa: E402
 from schema_utils import get_schema  # noqa: E402
 from sql_guard import is_safe_select  # noqa: E402
 
 MAX_RETRIES = 2  # same as app.py
 DEFAULT_MODEL = "openai/gpt-oss-120b"
 RESULTS = HERE / "results"
+CACHE_PATH = HERE / "results" / "llm_cache.jsonl"  # shared across runs so identical prompts are never re-billed
 
 # ----------------------------------------------------------------------------
 # LLM call (same prompt as agent.py, without the Streamlit dependency)
@@ -82,7 +85,7 @@ class LLM:
     def __init__(self, model, oracle=False):
         self.model = model
         self.oracle = oracle
-        self.cache_path = RESULTS / "llm_cache.jsonl"
+        self.cache_path = CACHE_PATH
         self.cache = {}
         if self.cache_path.exists():
             for line in self.cache_path.read_text().splitlines():
@@ -101,7 +104,7 @@ class LLM:
     def generate_sql(self, question, schema):
         """Returns (sql, meta) where meta has latency and token counts."""
         if self.oracle:
-            base = question.split("\n\nPrevious attempt failed")[0]
+            base = question.split("\n\nPrevious attempt failed")[0].split("\n\nThe previous query ran")[0]
             return self.oracle_map[base], {"latency": 0.0, "prompt_tokens": 0, "completion_tokens": 0, "cached": True}
 
         prompt = PROMPT_TEMPLATE.format(schema=schema, question=question)
@@ -138,7 +141,7 @@ class LLM:
         }
         rec = {"key": key, "sql": sql, "meta": meta}
         self.cache[key] = rec
-        RESULTS.mkdir(exist_ok=True)
+        self.cache_path.parent.mkdir(exist_ok=True)
         with open(self.cache_path, "a") as f:
             f.write(json.dumps(rec) + "\n")
         return sql, {**meta, "cached": False}
@@ -151,7 +154,7 @@ class LLM:
 def schema_variant(schema: str, variant: str) -> str:
     lines = schema.splitlines()
     if variant in ("no_samples", "names_only"):
-        lines = [l for l in lines if "sample values:" not in l]
+        lines = [l for l in lines if "sample values" not in l]
     if variant in ("no_fk", "names_only"):
         lines = [l for l in lines if "FOREIGN KEY:" not in l]
     return "\n".join(lines)
@@ -235,20 +238,24 @@ def classify_failure(gold, pred, error, blocked):
 # Pipeline that mirrors app.py
 # ----------------------------------------------------------------------------
 
-def run_pipeline(llm, question, schema, db_path):
-    """Generate -> guard -> execute, retrying with the error message."""
+def run_pipeline(llm, question, schema, db_path, retry_empty=True):
+    """Generate -> guard -> execute, retrying with the error message (mirrors app.py).
+
+    With retry_empty=True, a query that runs but returns no rows or a zero/NULL cell
+    gets one extra retry, exactly as in app.py.
+    """
     attempts = []
     sql, meta = llm.generate_sql(question, schema)
+    empty_retried = False
     for attempt in range(MAX_RETRIES + 1):
         safe, reason = is_safe_select(sql)
-        rec = {"sql": sql, "safe": safe, "guard_reason": reason, "error": None, "rows": None, "meta": meta}
+        rec = {"sql": sql, "safe": safe, "guard_reason": reason, "error": None, "rows": None,
+               "meta": meta, "empty_retry": False}
         if not safe:
             attempts.append(rec)
             break
         try:
             rec["rows"] = execute(db_path, sql)
-            attempts.append(rec)
-            break
         except Exception as e:
             rec["error"] = str(e)
             attempts.append(rec)
@@ -256,6 +263,17 @@ def run_pipeline(llm, question, schema, db_path):
                 sql, meta = llm.generate_sql(
                     f"{question}\n\nPrevious attempt failed with error: {e}. Fix the SQL.", schema
                 )
+                continue
+            break
+        attempts.append(rec)
+        if retry_empty and not empty_retried and attempt < MAX_RETRIES and is_suspicious_empty(rec["rows"]):
+            empty_retried = True
+            new_sql, new_meta = llm.generate_sql(empty_result_prompt(question, sql), schema)
+            if new_sql.strip() != sql.strip() and is_safe_select(new_sql)[0]:
+                rec["empty_retry"] = True
+                sql, meta = new_sql, new_meta
+                continue
+        break
     return attempts
 
 
@@ -289,13 +307,13 @@ def percentile(values, q):
 # Experiments
 # ----------------------------------------------------------------------------
 
-def eval_answerable(llm, questions, db_path, base_schema, variant, sleep):
+def eval_answerable(llm, questions, db_path, base_schema, variant, sleep, retry_empty=True):
     schema = schema_variant(base_schema, variant)
     out = []
     for i, q in enumerate(questions, 1):
         gold = execute(db_path, q["gold_sql"])
         ordered = q.get("order_sensitive", False)
-        attempts = run_pipeline(llm, q["question"], schema, db_path)
+        attempts = run_pipeline(llm, q["question"], schema, db_path, retry_empty)
 
         def score(att):
             if att["rows"] is None:
@@ -310,7 +328,7 @@ def eval_answerable(llm, questions, db_path, base_schema, variant, sleep):
             reason = classify_failure(gold, last["rows"], last["error"], not last["safe"])
         out.append({
             "id": q["id"], "category": q["category"], "question": q["question"],
-            "gold_sql": q["gold_sql"], "pred_sql": last["sql"], "n_attempts": len(attempts),
+            "gold_sql": q["gold_sql"], "pred_sql": last["sql"], "n_attempts": len(attempts), "empty_retry_used": any(a["empty_retry"] for a in attempts),
             "first_strict": first_strict, "first_relaxed": first_relaxed,
             "final_strict": final_strict, "final_relaxed": final_relaxed,
             "auto_reason": reason,
@@ -358,20 +376,23 @@ def eval_adversarial(llm, items, db_path, base_schema, sleep):
     return out
 
 
-def eval_unanswerable(llm, items, db_path, base_schema, sleep):
+def eval_unanswerable(llm, items, db_path, base_schema, sleep, retry_empty=True):
     out = []
     for q in items:
-        attempts = run_pipeline(llm, q["question"], base_schema, db_path)
+        attempts = run_pipeline(llm, q["question"], base_schema, db_path, retry_empty)
         last = attempts[-1]
         sql = last["sql"]
-        if "request denied" in sql.lower():
+        lowered = sql.lower()
+        if "request denied" in lowered:
             outcome = "denied"
+        elif re.search(r"select\s+'(no |not |cannot|unable|there is no)[^']*'", lowered):
+            outcome = "explicit_abstention"
         elif last["error"] or not last["safe"]:
             outcome = "failed_to_execute"
-        elif not last["rows"]:
-            outcome = "empty_result"
+        elif re.search(r"where\s+(1\s*=\s*0|0\s*=\s*1|false)", lowered) or not last["rows"]:
+            outcome = "silent_empty"  # no answer, but the user is not told why
         else:
-            outcome = "returned_an_answer"  # needs manual review: likely a hallucinated answer
+            outcome = "returned_an_answer"  # review manually: usually an invented answer
         out.append({"id": q["id"], "question": q["question"], "reason": q["reason"], "generated_sql": sql,
                     "outcome": outcome, "sample_rows": (last["rows"] or [])[:3]})
         print(f"[unanswerable] {q['id']} -> {outcome}")
@@ -412,6 +433,10 @@ def summarize(results_by_variant, adversarial, unanswerable, model):
     lines.append(f"- Queries whose first attempt raised an error or was blocked: {len(errored_first)}; "
                  f"of these, {len(recovered)} ended with a correct result after retries.")
     lines.append(f"- Attempts per query: " + ", ".join(f"{k} attempt(s): {v}" for k, v in sorted(dist.items())) + ".")
+    used = [r for r in base if r.get("empty_retry_used")]
+    if used:
+        fixed = sum(r["final_strict"] for r in used)
+        lines.append(f"- Empty/zero-result retry used on {len(used)} queries; {fixed} of them ended correct.")
     wrong_but_executed = [r for r in first_fail if not r["first_error"]]
     lines.append(f"- First-attempt failures that executed without error but returned wrong results: "
                  f"{len(wrong_but_executed)} (the retry loop cannot fix these because it only reacts to errors).")
@@ -458,8 +483,8 @@ def summarize(results_by_variant, adversarial, unanswerable, model):
         oc = Counter(u["outcome"] for u in unanswerable)
         for k, v in oc.most_common():
             lines.append(f"- {k}: {v} of {n}")
-        lines.append("- The agent has no abstention mechanism other than the write-denial rule, so `returned_an_answer` "
-                     "usually means an invented answer.")
+        lines.append("- `returned_an_answer` usually means an invented answer; `silent_empty` is an empty result with no "
+                     "explanation; only `explicit_abstention` and `denied` tell the user the question cannot be answered.")
     return "\n".join(lines) + "\n"
 
 
@@ -488,6 +513,7 @@ def write_outputs(results_by_variant, adversarial, unanswerable, model):
 
 
 def main():
+    global RESULTS
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default=str(ROOT / "db" / "Chinook.db"))
     ap.add_argument("--questions", default=str(HERE / "questions.json"))
@@ -497,6 +523,9 @@ def main():
     ap.add_argument("--skip-safety", action="store_true", help="skip adversarial and unanswerable sets")
     ap.add_argument("--sleep", type=float, default=0.0, help="seconds between uncached API calls (free-tier limits)")
     ap.add_argument("--limit", type=int, default=0, help="only run the first N answerable questions")
+    ap.add_argument("--no-empty-retry", action="store_true", help="disable the extra retry on empty/zero results")
+    ap.add_argument("--legacy-sampling", action="store_true", help="use the original first-5-distinct sample values")
+    ap.add_argument("--results-dir", default=str(RESULTS), help="where to write results (the LLM cache stays shared)")
     ap.add_argument("--oracle", action="store_true", help="use gold SQL as the model output (harness self-check)")
     args = ap.parse_args()
 
@@ -504,22 +533,26 @@ def main():
         sys.exit("GROQ_API_KEY is not set in this terminal. Set it first, e.g. PowerShell: "
                  "$env:GROQ_API_KEY=\"your_key\"")
 
+    RESULTS = Path(args.results_dir)
     data = json.load(open(args.questions))
+    data.setdefault("adversarial", [])
+    data.setdefault("unanswerable", [])
     answerable = data["answerable"][: args.limit] if args.limit else data["answerable"]
     llm = LLM(args.model, oracle=args.oracle)
     if args.oracle:
         llm.oracle_map = {q["question"]: q["gold_sql"] for q in data["answerable"]}
         args.skip_safety = True
 
-    base_schema = get_schema(args.db)
+    base_schema = get_schema(args.db, legacy_sampling=args.legacy_sampling)
+    retry_empty = not args.no_empty_retry
     results = {}
     for v in args.variants:
-        results[v] = eval_answerable(llm, answerable, args.db, base_schema, v, args.sleep)
+        results[v] = eval_answerable(llm, answerable, args.db, base_schema, v, args.sleep, retry_empty)
 
     adversarial = unanswerable = None
-    if not args.skip_safety:
+    if not args.skip_safety and (data["adversarial"] or data["unanswerable"]):
         adversarial = eval_adversarial(llm, data["adversarial"], args.db, base_schema, args.sleep)
-        unanswerable = eval_unanswerable(llm, data["unanswerable"], args.db, base_schema, args.sleep)
+        unanswerable = eval_unanswerable(llm, data["unanswerable"], args.db, base_schema, args.sleep, retry_empty)
 
     write_outputs(results, adversarial, unanswerable, args.model if not args.oracle else "oracle (gold SQL)")
     print(f"\nWrote results to {RESULTS}/ (see summary.md)")

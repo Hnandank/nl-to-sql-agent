@@ -6,6 +6,7 @@ import os
 from agent import generate_sql
 from sql_guard import is_safe_select
 from schema_utils import get_schema, convert_to_sqlite
+from result_checks import is_suspicious_empty, empty_result_prompt
 
 st.title("SQL Query Agent")
 
@@ -55,6 +56,7 @@ if st.session_state.query_count >= MAX_QUERIES_PER_SESSION:
 # --- Query generation + execution loop ---
 if question:
     sql = None
+    empty_retried = False
     with st.spinner("Generating SQL..."):
         sql = generate_sql(question, schema)
 
@@ -72,6 +74,16 @@ if question:
             conn = sqlite3.connect(db_path)
             df = pd.read_sql(sql, conn)
             conn.close()
+
+            # One extra retry when the query ran but returned nothing / zero, which often means
+            # a filter value did not match the stored data (e.g. 'United States' vs 'USA').
+            if not empty_retried and attempt < MAX_RETRIES and is_suspicious_empty(df.values.tolist()):
+                empty_retried = True
+                st.warning("The query returned no data. Re-checking filter values and retrying once...")
+                new_sql = generate_sql(empty_result_prompt(question, sql), schema)
+                if new_sql.strip() != sql.strip() and is_safe_select(new_sql)[0]:
+                    sql = new_sql
+                    continue
 
             st.subheader("Results")
             st.dataframe(df)

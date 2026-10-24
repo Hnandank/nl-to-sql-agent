@@ -1,0 +1,155 @@
+{
+  "answerable": [
+    {
+      "id": "c01",
+      "category": "value_code",
+      "question": "How many employees work in Bengaluru?",
+      "gold_sql": "SELECT COUNT(*) FROM staff WHERE city = 'BLR';"
+    },
+    {
+      "id": "c02",
+      "category": "value_code",
+      "question": "How many employees are currently on leave?",
+      "gold_sql": "SELECT COUNT(*) FROM staff WHERE status = 'on_leave';"
+    },
+    {
+      "id": "c03",
+      "category": "value_code",
+      "question": "How many employees have resigned?",
+      "gold_sql": "SELECT COUNT(*) FROM staff WHERE status = 'resigned';"
+    },
+    {
+      "id": "c04",
+      "category": "value_code",
+      "question": "How many employees are in the Engineering department?",
+      "gold_sql": "SELECT COUNT(*) FROM staff WHERE dept_code = 'ENG';"
+    },
+    {
+      "id": "c05",
+      "category": "value_format",
+      "question": "How many projects are in progress?",
+      "gold_sql": "SELECT COUNT(*) FROM projects WHERE stage = 'In Progress';"
+    },
+    {
+      "id": "c06",
+      "category": "value_format",
+      "question": "How many projects are completed?",
+      "gold_sql": "SELECT COUNT(*) FROM projects WHERE stage = 'Completed';"
+    },
+    {
+      "id": "c07",
+      "category": "value_code",
+      "question": "List the names of all top priority (P0) projects.",
+      "gold_sql": "SELECT project_name FROM projects WHERE priority = 'P0';"
+    },
+    {
+      "id": "c08",
+      "category": "value_code",
+      "question": "What is the average salary of active employees based in Mumbai?",
+      "gold_sql": "SELECT AVG(salary_inr) FROM staff WHERE status = 'active' AND city = 'MUM';"
+    },
+    {
+      "id": "c09",
+      "category": "aggregation",
+      "question": "Who is the highest paid employee?",
+      "gold_sql": "SELECT full_name FROM staff ORDER BY salary_inr DESC LIMIT 1;"
+    },
+    {
+      "id": "c10",
+      "category": "aggregation",
+      "question": "What is the total budget of all projects that are on hold?",
+      "gold_sql": "SELECT SUM(budget_inr) FROM projects WHERE stage = 'On Hold';"
+    },
+    {
+      "id": "c11",
+      "category": "join",
+      "question": "Which department has the most employees? Show the department name.",
+      "gold_sql": "SELECT d.dept_name FROM staff s JOIN departments d ON s.dept_code = d.dept_code GROUP BY d.dept_code ORDER BY COUNT(*) DESC LIMIT 1;"
+    },
+    {
+      "id": "c12",
+      "category": "join",
+      "question": "Who is the head of the Finance department? Show the full name.",
+      "gold_sql": "SELECT s.full_name FROM departments d JOIN staff s ON d.head_staff_id = s.staff_id WHERE d.dept_name = 'Finance';"
+    },
+    {
+      "id": "c13",
+      "category": "date",
+      "question": "How many hours were logged in total in March 2025?",
+      "gold_sql": "SELECT SUM(hours) FROM timesheets WHERE strftime('%Y-%m', work_date) = '2025-03';"
+    },
+    {
+      "id": "c14",
+      "category": "join",
+      "question": "Which employee has logged the most hours in total? Show the full name.",
+      "gold_sql": "SELECT s.full_name FROM timesheets t JOIN staff s ON t.staff_id = s.staff_id GROUP BY s.staff_id ORDER BY SUM(t.hours) DESC LIMIT 1;"
+    },
+    {
+      "id": "c15",
+      "category": "join",
+      "question": "Which 3 projects have the most hours logged? Show the project name.",
+      "gold_sql": "SELECT p.project_name FROM timesheets t JOIN projects p ON t.project_id = p.project_id GROUP BY p.project_id ORDER BY SUM(t.hours) DESC LIMIT 3;",
+      "order_sensitive": true
+    },
+    {
+      "id": "c16",
+      "category": "subquery_having",
+      "question": "How many employees have logged hours on more than 15 distinct projects?",
+      "gold_sql": "SELECT COUNT(*) FROM (SELECT staff_id FROM timesheets GROUP BY staff_id HAVING COUNT(DISTINCT project_id) > 15);"
+    },
+    {
+      "id": "c17",
+      "category": "join",
+      "question": "What is the average salary in each department? Show department name and average salary.",
+      "gold_sql": "SELECT d.dept_name, AVG(s.salary_inr) FROM staff s JOIN departments d ON s.dept_code = d.dept_code GROUP BY d.dept_code;"
+    },
+    {
+      "id": "c18",
+      "category": "value_code",
+      "question": "How many active employees are at level L3 or above?",
+      "gold_sql": "SELECT COUNT(*) FROM staff WHERE status = 'active' AND level IN ('L3', 'L4', 'L5');"
+    },
+    {
+      "id": "c19",
+      "category": "date",
+      "question": "List the full names of employees hired in 2024.",
+      "gold_sql": "SELECT full_name FROM staff WHERE strftime('%Y', hire_date) = '2024';"
+    },
+    {
+      "id": "c20",
+      "category": "legit_zero",
+      "question": "How many projects have no hours logged against them?",
+      "gold_sql": "SELECT COUNT(*) FROM projects WHERE project_id NOT IN (SELECT project_id FROM timesheets);"
+    },
+    {
+      "id": "c21",
+      "category": "value_code",
+      "question": "How many employees in the Sales department are based in Delhi?",
+      "gold_sql": "SELECT COUNT(*) FROM staff WHERE dept_code = 'SLS' AND city = 'DEL';"
+    },
+    {
+      "id": "c22",
+      "category": "value_code",
+      "question": "What is the total budget of P1 projects owned by the Marketing department?",
+      "gold_sql": "SELECT SUM(budget_inr) FROM projects WHERE priority = 'P1' AND dept_code = 'MKT';"
+    },
+    {
+      "id": "c23",
+      "category": "aggregation",
+      "question": "Which city has the highest average salary? Show the city.",
+      "gold_sql": "SELECT city FROM staff GROUP BY city ORDER BY AVG(salary_inr) DESC LIMIT 1;"
+    },
+    {
+      "id": "c24",
+      "category": "aggregation",
+      "question": "What percentage of employees have resigned? Round to 1 decimal place.",
+      "gold_sql": "SELECT ROUND(100.0 * SUM(status = 'resigned') / COUNT(*), 1) FROM staff;"
+    },
+    {
+      "id": "c25",
+      "category": "legit_zero",
+      "question": "How many employees in the HR department are at level L5?",
+      "gold_sql": "SELECT COUNT(*) FROM staff WHERE dept_code = 'HR' AND level = 'L5';"
+    }
+  ]
+}

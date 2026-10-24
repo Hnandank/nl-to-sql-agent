@@ -15,7 +15,24 @@ def sanitize_table_name(name: str) -> str:
     return name
 
 
-def get_schema(db_path: str) -> str:
+MAX_ENUM_VALUES = 30   # list every value for columns with at most this many distinct values
+TOP_K_VALUES = 5       # otherwise list the most frequent values
+MAX_VALUE_CHARS = 40   # truncate long strings to keep the prompt small
+
+
+def _short(value) -> str:
+    text = str(value)
+    return text if len(text) <= MAX_VALUE_CHARS else text[:MAX_VALUE_CHARS] + "..."
+
+
+def get_schema(db_path: str, legacy_sampling: bool = False) -> str:
+    """Describe the database for the LLM prompt.
+
+    Text columns get example values so the model matches the stored format
+    (e.g. 'USA' rather than 'United States'). Low-cardinality columns list ALL
+    distinct values; others list the most frequent ones. legacy_sampling=True
+    restores the original behaviour (first 5 distinct values) for comparison.
+    """
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
@@ -35,10 +52,29 @@ def get_schema(db_path: str) -> str:
             col_type = col[2].upper()
             if "CHAR" in col_type or "TEXT" in col_type or col_type == "":
                 try:
-                    cursor.execute(f"SELECT DISTINCT \"{col_name}\" FROM \"{table}\" LIMIT 5;")
-                    samples = [str(row[0]) for row in cursor.fetchall()]
-                    if samples:
-                        schema_lines.append(f"    {col_name} sample values: {samples}")
+                    if legacy_sampling:
+                        cursor.execute(f"SELECT DISTINCT \"{col_name}\" FROM \"{table}\" LIMIT 5;")
+                        samples = [str(row[0]) for row in cursor.fetchall()]
+                        if samples:
+                            schema_lines.append(f"    {col_name} sample values: {samples}")
+                        continue
+                    cursor.execute(
+                        f"SELECT COUNT(DISTINCT \"{col_name}\") FROM \"{table}\" WHERE \"{col_name}\" IS NOT NULL;"
+                    )
+                    n_distinct = cursor.fetchone()[0]
+                    if n_distinct == 0:
+                        continue
+                    limit = n_distinct if n_distinct <= MAX_ENUM_VALUES else TOP_K_VALUES
+                    cursor.execute(
+                        f"SELECT \"{col_name}\" FROM \"{table}\" WHERE \"{col_name}\" IS NOT NULL "
+                        f"GROUP BY \"{col_name}\" ORDER BY COUNT(*) DESC, \"{col_name}\" LIMIT {limit};"
+                    )
+                    samples = [_short(row[0]) for row in cursor.fetchall()]
+                    if n_distinct <= MAX_ENUM_VALUES:
+                        label = f"sample values (all {n_distinct} distinct)"
+                    else:
+                        label = f"sample values (top {limit} most frequent of {n_distinct} distinct)"
+                    schema_lines.append(f"    {col_name} {label}: {samples}")
                 except Exception:
                     pass
 
